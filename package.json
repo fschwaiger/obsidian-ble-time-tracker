@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-sample-plugin",
+	"name": "obsidian-ble-time-tracker",
 	"version": "1.0.0",
-	"description": "This is a sample plugin for Obsidian (https://obsidian.md)",
+	"description": "This plugin connects to the BLE time tracker device and runs vault actions when used.",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
