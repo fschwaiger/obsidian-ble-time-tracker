@@ -1,6 +1,6 @@
 {
 	"id": "ble-time-tracker",
-	"name": "BLE Time Tracker",
+	"name": "Time Tracker",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
 	"description": "Connects to the time tracker device via BLE and runs vault actions when used.",
