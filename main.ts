@@ -1,3 +1,4 @@
+import { setServers } from "dns";
 import {
 	App,
 	Modal,
@@ -6,9 +7,9 @@ import {
 	Setting,
 	addIcon,
 } from "obsidian";
-let noble = require("@abandonware/noble");
 
 type Side = "BF" | "BR" | "BL" | "BB" | "TF" | "TR" | "TL" | "TB" | "__";
+type State = "disconnected" | "connecting" | "connected" | "unavailable";
 
 type Action = {
 	command?: string;
@@ -73,91 +74,69 @@ const NOTIFICATION_CHARACTERISTIC_UUID = "c7e70012_c847_11e6_8175_8c89a55d403c";
 
 export default class BluetoothTimeTrackerPlugin extends Plugin {
 	settings: BluetoothTimeTrackerPluginSettings;
-	state: "disconnected" | "connecting" | "connected" = "disconnected";
-	side: "BF" | "BR" | "BL" | "BB" | "TF" | "TR" | "TL" | "TB" | "__";
+	state: State = "disconnected";
+	side: Side;
+	device: BluetoothDevice | undefined = undefined;
 	statusBarItemEl: HTMLElement;
 	ribbonIconEl: HTMLElement;
+
+	async onReconnect() {
+		if (this.state === "disconnected" || this.state == "unavailable") {
+			return this.onConnect();
+		} else {
+			return this.onDisconnect();
+		}
+	}
+
+	async onConnect() {
+		this.updateState("connecting");
+		if (!await navigator.bluetooth?.getAvailability()) {
+			this.updateState("unavailable");
+			return;
+		}
+
+		navigator.bluetooth.requestDevice({filters: [{name: this.settings.deviceName}]})
+		.then(device => {
+			this.device = device;
+			return device.gatt?.connect();
+		})
+		.then(server => server?.getPrimaryService('battery_service')) // Replace with actual service UUID
+		.then(service => service?.getCharacteristic(NOTIFICATION_CHARACTERISTIC_UUID))
+		.then(characteristic => {
+			if (characteristic) {
+				characteristic.addEventListener('characteristicvaluechanged', this.onSideChange);
+				return characteristic.startNotifications();
+			}
+		})
+		.then(() => {
+			this.updateState("connected");
+			console.log('Connected and listening for notifications...');
+		})
+		.catch(error => {
+			this.updateState("disconnected");
+			console.error('Error connecting to device:', error);
+		});
+	}
+
+	async onDisconnect() {
+		this.updateState("disconnected");
+		this.device?.gatt?.disconnect();
+		this.device = undefined;
+	}
 
 	async onload() {
 		await this.loadSettings();
 
-		const connectCommand = this.addCommand({
+		this.addCommand({
 			id: "connect",
 			name: "Connect Time Tracker",
-			callback: () => {
-				this.state = "connecting";
-				this.updateStatus();
-
-				noble.on("stateChange", async (state: string) => {
-					if (state === "poweredOn") {
-						await noble.startScanningAsync();
-						this.state = "connecting";
-					}
-					this.updateStatus();
-				});
-
-				noble.on("discover", async (peripheral: any) => {
-					if (
-						peripheral.advertisement.localName !==
-						this.settings.deviceName
-					) {
-						return;
-					}
-
-					await noble.stopScanningAsync();
-					await peripheral.connectAsync();
-					this.state = 'disconnected';
-					const { characteristics } =
-						await peripheral.discoverSomeServicesAndCharacteristicsAsync(
-							[],
-							[NOTIFICATION_CHARACTERISTIC_UUID]
-						);
-					await characteristics[0].subscribe((error: any) => {
-						if (!error) {
-							this.state = "connected";
-						}
-						this.updateStatus();
-					});
-					characteristics[0].on("data", (data: number) => {
-						this.side = decodeSide(data);
-						this.updateStatus();
-
-						const actionSet =
-							this.settings.actionSetsByName[
-								this.settings.activeActionSet
-							];
-						const action = actionSet[this.side];
-
-						if (action.template) {
-							new BluetoothTimeTrackerModal(
-								this.app,
-								`Template: ${action.template}`
-							).open();
-						}
-						if (action.command) {
-							new BluetoothTimeTrackerModal(
-								this.app,
-								`Command: ${action.command}`
-							).open();
-						}
-						if (action.actionSet) {
-							this.settings.activeActionSet = action.actionSet;
-							this.saveSettings();
-						}
-					});
-				});
-			},
+			callback: this.onConnect.bind(this)
 		});
 
-		const disconnectCommand = this.addCommand({
+		this.addCommand({
 			id: "disconnect",
 			name: "Disconnect Time Tracker",
-			callback: () => {
-				this.state = "disconnected";
-				noble.stopScanning();
-				noble.removeAllListeners();
-				this.updateStatus();
-			},
+			callback: this.onDisconnect.bind(this)
 		});
 
 		addIcon(
@@ -168,21 +147,27 @@ export default class BluetoothTimeTrackerPlugin extends Plugin {
 		this.ribbonIconEl = this.addRibbonIcon(
 			"time-tracker",
 			"Time Tracker",
-			(evt: MouseEvent) => {
-				if (this.state === "disconnected") {
-					connectCommand.callback?.();
-				} else {
-					disconnectCommand.callback?.();
-				}
-			}
+			this.onReconnect.bind(this)
 		);
 
 		this.statusBarItemEl = this.addStatusBarItem();
+		this.statusBarItemEl.addClass("mod-clickable");
+		this.statusBarItemEl.addEventListener("click", this.onReconnect.bind(this));
+
 		this.addSettingTab(new BluetoothTimeTrackerSettingTab(this.app, this));
-		this.updateStatus();
+		
+		this.updateState("disconnected");
+		this.onReconnect();
 	}
 
 	onunload() {}
+
+	onSideChange(event: Event) {
+		let value = (event.target as BluetoothRemoteGATTCharacteristic).value;
+		this.side = decodeSide(value?.getUint8(0) || 0x00);
+		this.updateState();
+		console.log(this.side);
+	}
 
 	async loadSettings() {
 		this.settings = Object.assign(
@@ -196,16 +181,29 @@ export default class BluetoothTimeTrackerPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
-	async updateStatus() {
+	async updateState(state: State | undefined = undefined) {
+		if (state !== undefined) {
+			this.state = state;
+		}
+
+		this.ribbonIconEl.setAttr("aria-label", `Time Tracker: ${this.state}`);
+
 		if (this.state == "connected") {
+			this.ribbonIconEl.style.opacity = "1.0";
 			this.ribbonIconEl.style.color = "rgb(0, 255, 0)";
-			this.statusBarItemEl.setText("tracker 72% <TB>");
+			this.statusBarItemEl.setText(`◇ N/A <${this.side}>`);
 		} else if (this.state == "connecting") {
+			this.ribbonIconEl.style.opacity = "1.0";
 			this.ribbonIconEl.style.color = "rgb(80, 160, 255)";
-			this.statusBarItemEl.setText("scanning ...");
-		} else {
+			this.statusBarItemEl.setText("◇ scanning ...");
+		} else if (this.state == "unavailable") {
+			this.ribbonIconEl.style.opacity = "0.5";
 			this.ribbonIconEl.style.color = "inherit";
-			this.statusBarItemEl.setText("no tracker");
+			this.statusBarItemEl.setText("◇ unavailable");
+		} else {
+			this.ribbonIconEl.style.opacity = "1.0";
+			this.ribbonIconEl.style.color = "inherit";
+			this.statusBarItemEl.setText("◇ disconnected");
 		}
 	}
 }
