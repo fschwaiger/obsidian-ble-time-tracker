@@ -1,4 +1,3 @@
-import { setServers } from "dns";
 import {
 	App,
 	Modal,
@@ -7,6 +6,9 @@ import {
 	Setting,
 	addIcon,
 } from "obsidian";
+
+import { BrowserWindow } from "electron";
+const { remote } = require('electron');
 
 type Side = "BF" | "BR" | "BL" | "BB" | "TF" | "TR" | "TL" | "TB" | "__";
 type State = "disconnected" | "connecting" | "connected" | "unavailable";
@@ -98,9 +100,9 @@ export default class BluetoothTimeTrackerPlugin extends Plugin {
 		navigator.bluetooth.requestDevice({filters: [{name: this.settings.deviceName}]})
 		.then(device => {
 			this.device = device;
-			return device.gatt?.connect();
+			return this.device.gatt?.connect();
 		})
-		.then(server => server?.getPrimaryService('battery_service')) // Replace with actual service UUID
+		.then(server => server?.getPrimaryService('c7e70012-c847-11e6-8175-8c89a55d403c'))
 		.then(service => service?.getCharacteristic(NOTIFICATION_CHARACTERISTIC_UUID))
 		.then(characteristic => {
 			if (characteristic) {
@@ -157,7 +159,15 @@ export default class BluetoothTimeTrackerPlugin extends Plugin {
 		this.addSettingTab(new BluetoothTimeTrackerSettingTab(this.app, this));
 		
 		this.updateState("disconnected");
-		this.onReconnect();
+
+		let win: Electron.BrowserWindow = remote.BrowserWindow.getFocusedWindow();
+		win?.webContents.on("select-bluetooth-device", (event, devices, callback) => {
+			event.preventDefault();
+			let device = devices.find((device) => device.deviceName === this.settings.deviceName);
+			if (device) {
+			  callback(device.deviceId);
+			}
+		  });
 	}
 
 	onunload() {}
