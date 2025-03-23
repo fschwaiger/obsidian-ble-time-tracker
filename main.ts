@@ -1,6 +1,5 @@
 import {
 	App,
-	Modal,
 	Plugin,
 	PluginSettingTab,
 	Setting,
@@ -9,6 +8,25 @@ import {
 
 import { BrowserWindow } from "electron";
 const { remote } = require('electron');
+
+let cancelScanning = () => {};
+
+let win: Electron.BrowserWindow = remote.BrowserWindow.getFocusedWindow();
+win?.webContents.on('select-bluetooth-device', (event, deviceList, callback) => {
+	event.preventDefault()
+	console.log('discovering devices...')
+	console.log(deviceList.map((device) => device.deviceName))
+	cancelScanning = () => { callback('') }
+	const result = deviceList.find((device) => {
+	  return device.deviceName.startsWith('Timeular')
+	})
+	if (result) {
+	  callback(result.deviceId)
+	} else {
+	  // The device wasn't found so we need to either wait longer (eg until the
+	  // device is turned on) or until the user cancels the request
+	}
+  })
 
 type Side = "BF" | "BR" | "BL" | "BB" | "TF" | "TR" | "TL" | "TB" | "__";
 type State = "disconnected" | "connecting" | "connected" | "unavailable";
@@ -72,7 +90,8 @@ const DEFAULT_SETTINGS: BluetoothTimeTrackerPluginSettings = {
 	},
 };
 
-const NOTIFICATION_CHARACTERISTIC_UUID = "c7e70012_c847_11e6_8175_8c89a55d403c";
+const NOTIFICATION_SERVICE_UUID = "c7e70012-c847-11e6-8175-8c89a55d403c";
+const NOTIFICATION_CHARACTERISTIC_UUID = "c7e70012-c847-11e6-8175-8c89a55d403c";
 
 export default class BluetoothTimeTrackerPlugin extends Plugin {
 	settings: BluetoothTimeTrackerPluginSettings;
@@ -85,6 +104,8 @@ export default class BluetoothTimeTrackerPlugin extends Plugin {
 	async onReconnect() {
 		if (this.state === "disconnected" || this.state == "unavailable") {
 			return this.onConnect();
+		} else if (this.state === "connecting") {
+			return this.onCancel();
 		} else {
 			return this.onDisconnect();
 		}
@@ -97,18 +118,16 @@ export default class BluetoothTimeTrackerPlugin extends Plugin {
 			return;
 		}
 
-		navigator.bluetooth.requestDevice({filters: [{name: this.settings.deviceName}]})
+		navigator.bluetooth.requestDevice({ filters: [{ name: 'Timeular Tra' }] })
 		.then(device => {
 			this.device = device;
 			return this.device.gatt?.connect();
 		})
-		.then(server => server?.getPrimaryService('c7e70012-c847-11e6-8175-8c89a55d403c'))
+		.then(server => server?.getPrimaryService(NOTIFICATION_SERVICE_UUID))
 		.then(service => service?.getCharacteristic(NOTIFICATION_CHARACTERISTIC_UUID))
 		.then(characteristic => {
-			if (characteristic) {
-				characteristic.addEventListener('characteristicvaluechanged', this.onSideChange);
-				return characteristic.startNotifications();
-			}
+			characteristic?.addEventListener('characteristicvaluechanged', this.onSideChange);
+			characteristic?.startNotifications();
 		})
 		.then(() => {
 			this.updateState("connected");
@@ -120,26 +139,19 @@ export default class BluetoothTimeTrackerPlugin extends Plugin {
 		});
 	}
 
-	async onDisconnect() {
+	async onCancel() {
+		cancelScanning();
 		this.updateState("disconnected");
+	}
+
+	async onDisconnect() {
 		this.device?.gatt?.disconnect();
 		this.device = undefined;
+		this.updateState("disconnected");
 	}
 
 	async onload() {
 		await this.loadSettings();
-
-		this.addCommand({
-			id: "connect",
-			name: "Connect Time Tracker",
-			callback: this.onConnect.bind(this)
-		});
-
-		this.addCommand({
-			id: "disconnect",
-			name: "Disconnect Time Tracker",
-			callback: this.onDisconnect.bind(this)
-		});
 
 		addIcon(
 			"time-tracker",
@@ -159,15 +171,6 @@ export default class BluetoothTimeTrackerPlugin extends Plugin {
 		this.addSettingTab(new BluetoothTimeTrackerSettingTab(this.app, this));
 		
 		this.updateState("disconnected");
-
-		let win: Electron.BrowserWindow = remote.BrowserWindow.getFocusedWindow();
-		win?.webContents.on("select-bluetooth-device", (event, devices, callback) => {
-			event.preventDefault();
-			let device = devices.find((device) => device.deviceName === this.settings.deviceName);
-			if (device) {
-			  callback(device.deviceId);
-			}
-		  });
 	}
 
 	onunload() {}
@@ -200,7 +203,7 @@ export default class BluetoothTimeTrackerPlugin extends Plugin {
 
 		if (this.state == "connected") {
 			this.ribbonIconEl.style.opacity = "1.0";
-			this.ribbonIconEl.style.color = "rgb(0, 255, 0)";
+			this.ribbonIconEl.style.color = "rgb(50, 200, 0)";
 			this.statusBarItemEl.setText(`◇ N/A <${this.side}>`);
 		} else if (this.state == "connecting") {
 			this.ribbonIconEl.style.opacity = "1.0";
@@ -215,22 +218,6 @@ export default class BluetoothTimeTrackerPlugin extends Plugin {
 			this.ribbonIconEl.style.color = "inherit";
 			this.statusBarItemEl.setText("◇ disconnected");
 		}
-	}
-}
-
-class BluetoothTimeTrackerModal extends Modal {
-	constructor(app: App, public text: string) {
-		super(app);
-	}
-
-	onOpen() {
-		const { contentEl } = this;
-		contentEl.setText(this.text);
-	}
-
-	onClose() {
-		const { contentEl } = this;
-		contentEl.empty();
 	}
 }
 
